@@ -36,3 +36,12 @@
   .mobile-actions .sprint-mobile{font-size:26px}
 }
 @media(max-width:365px){.mobile-actions button{width:83px}.enemy-readout{max-width:124px}.enemy-readout strong{font-size:13px}}
+
+/* EDICIÓN 003 · telemetría compacta; conserva el lenguaje de imprenta. */
+.network-stats{white-space:nowrap;display:inline-flex;gap:4px;align-items:center;font-family:var(--mono);font-size:9px;letter-spacing:0;color:var(--mute);padding:4px 8px;border:1px solid var(--line);background:#f6f1e7}
+.network-stats b{color:var(--ink);font-variant-numeric:tabular-nums}
+.network-stats .sep{padding:0 3px;color:#a5a49f}
+.network-stats.slow{border-color:#c55242;background:#f7e3dc}.network-stats.slow b:first-of-type{color:#a33528}
+@media(max-width:900px){.network-stats{font-size:8px;padding:3px 5px}}
+@media(max-width:700px){.network-stats{font-size:8px;gap:2px;padding:3px 4px}.network-stats .sep{padding:0 1px}}
+@media(max-width:370px){.network-stats{font-size:7px}}

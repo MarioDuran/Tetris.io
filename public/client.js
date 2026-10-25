@@ -8,7 +8,9 @@ const mobileControls=$('mobileControls');
 const mobile=()=>window.matchMedia('(max-width:700px)').matches || ('ontouchstart' in window && window.innerWidth<950);
 const C={paper:'#eee8da',line:'#d9d2c4',ink:'#19222a',white:'#fffdf6',blue:'#3d5dd6',red:'#e85640'};
 let socket=null, connected=false, wantedName='', active=false, meId=null, lastState=null;
-let reconnectDelay=700, reconnectTimer=0, statePlayers=new Map(), stateShards=[];
+const predictor=window.QuadriftPrediction;
+let moveSeq=0,pendingMoves=[],pingMs=null,lastPingAt=0;
+let reconnectDelay=700, reconnectTimer=0, statePlayers=new Map(), stateShards=[], shardIndex=new Map();
 let viewport={w:1,h:1,dpr:1},tile=30,camera={x:38,y:28},focused=false;
 let keyDown=new Set(),mobileDir=null,walkTarget=null,lastStep=0,lastHUD=0,lastRankJSON='',effects=[],lastNetworkAt=0;
 let lastEnemies=[],selectedPreview=null,rivalCells=new Set(),audio=null,soundEnabled=true;
@@ -25,7 +27,7 @@ function resize() {
 }
 window.addEventListener('resize',()=>{resize(); if(active){mobileControls.hidden=!mobile();rankboard.hidden=mobile();}});
 resize();
-function send(msg) {if(socket?.readyState===WebSocket.OPEN) socket.send(JSON.stringify(msg));}
+function send(msg) {if(socket?.readyState===WebSocket.OPEN){socket.send(JSON.stringify(msg));return true;}return false;}
 function setConnection(status) {
   connected=status==='online';
   $('connectionLabel').textContent=status==='online'?'EN LÍNEA':status==='connecting'?'CONECTANDO':'SIN CONEXIÓN';
@@ -45,17 +47,28 @@ function connect() {
     let msg;try{msg=JSON.parse(ev.data);}catch{return;}
     if(msg.t==='hello') {if(wantedName)send({t:'join',name:wantedName});}
     else if(msg.t==='welcome') {meId=msg.id;active=true;lastState=null;
-      statePlayers.clear();walkTarget=null;startOverlay.hidden=true;endOverlay.hidden=true;
+      statePlayers.clear();shardIndex.clear();stateShards=[];moveSeq=0;pendingMoves=[];pingMs=null;walkTarget=null;startOverlay.hidden=true;endOverlay.hidden=true;
       hud.hidden=false;rankboard.hidden=mobile();mobileControls.hidden=!mobile();$('aimHint').hidden=mobile();
       setTimeout(()=>$('aimHint').hidden=true,6800);
     } else if(msg.t==='state') {lastState=msg;lastNetworkAt=performance.now();applySnapshot(msg);}
     else if(msg.t==='event') eventMessage(msg);
+    else if(msg.t==='pong'){
+      const sample=performance.now()-msg.ts;
+      if(Number.isFinite(sample)&&sample>=0&&sample<30000){
+        pingMs=pingMs===null?sample:pingMs*.72+sample*.28;
+        $('pingValue').textContent=Math.round(pingMs);
+        $('simValue').textContent=Number(msg.simMs||0).toFixed(1);
+        $('loopValue').textContent=Number(msg.loopMs||0).toFixed(1);
+        $('networkStats').classList.toggle('slow',pingMs>180||msg.loopMs>45);
+      }
+    }
     else if(msg.t==='respawned'){endOverlay.hidden=true;walkTarget=null;}
     else if(msg.t==='error') toast(msg.message||'No se pudo entrar.');
   });
   socket.addEventListener('close',()=>{
     if(socket!==instance)return;
-    setConnection('offline');statePlayers.clear();lastState=null;
+    setConnection('offline');statePlayers.clear();shardIndex.clear();stateShards=[];pendingMoves=[];lastState=null;
+    $('pingValue').textContent='—';$('simValue').textContent='—';$('loopValue').textContent='—';
     if(active)toast('CONEXIÓN PERDIDA · RECONECTANDO');
     clearTimeout(reconnectTimer);
     reconnectTimer=setTimeout(connect,reconnectDelay);
@@ -86,7 +99,22 @@ function applySnapshot(s) {
   }
   for(const id of statePlayers.keys()) if(!present.has(id))statePlayers.delete(id);
   rivalCells=new Set();for(const player of statePlayers.values())if(player.id!==meId)for(const c of player.cells)rivalCells.add((player.x+c.x)+':'+(player.y+c.y));
-  stateShards=s.shards.map(raw=>({id:raw[0],x:raw[1],y:raw[2],cells:flattenCells(raw[3]),expiresAt:performance.now()+(raw[4]||0)}));
+  function decodeShard(raw){return {id:raw[0],x:raw[1],y:raw[2],cells:flattenCells(raw[3]),expiresAt:performance.now()+(raw[4]||0)};}
+  if(Array.isArray(s.shards))shardIndex=new Map(s.shards.map(raw=>[raw[0],decodeShard(raw)]));
+  else if(s.shardsDelta){
+    for(const id of s.shardsDelta.remove)shardIndex.delete(id);
+    for(const raw of s.shardsDelta.add)shardIndex.set(raw[0],decodeShard(raw));
+  }
+  stateShards=[...shardIndex.values()];
+  const self=statePlayers.get(meId);
+  if(self){
+    // Rewind to the authoritative server pose, then reapply only unconfirmed
+    // local inputs. We never predict pickups, rotation or combat outcomes.
+    pendingMoves=pendingMoves.filter(move=>move.seq>(s.ack||0));
+    const opponents=[...statePlayers.values()].filter(q=>q.id!==meId);
+    const pose=predictor.replay(self.x,self.y,self.cells,pendingMoves,stateShards,opponents);
+    self.x=pose.x;self.y=pose.y;
+  }
   lastEnemies=s.enemies||[];updateEnemyReadout();
   $('humanCount').textContent=s.humans;
   $('botCount').textContent=s.bots;
@@ -182,7 +210,7 @@ function eventMessage(msg) {
   if(msg.type==='no-sprint')toast(msg.reason||'SPRINT NO DISPONIBLE');
   if(msg.type==='sprint'){toast('SPRINT · −'+msg.lost+' CELDAS · +VELOCIDAD','level');playTone('sprint');burst();}
   if(msg.type==='dead') {
-    walkTarget=null;endOverlay.hidden=false;
+    pendingMoves=[];walkTarget=null;endOverlay.hidden=false;
     $('killedBy').textContent=msg.by?msg.by+' se quedó con tu territorio.':'Tu estructura ha sido absorbida.';
     $('endRank').textContent=msg.best+'×'+msg.best;
     $('endJoins').textContent=msg.joins;$('endCaps').textContent=msg.captures;
@@ -231,8 +259,9 @@ $('sprintMobile').addEventListener('click',sprint);
 $('sprintDesktop').addEventListener('click',sprint);
 function actionStep(now) {
   if(!isAlive())return;
+  if(now-lastPingAt>1500){lastPingAt=now;send({t:'ping',ts:performance.now()});}
   const self=statePlayers.get(meId);
-  const interval=self&&now<self.sprintUntil?47:70;
+  const interval=self&&now<self.sprintUntil?50:Math.ceil((115+Math.max(0,(self?.rank||1)-1)*14)/50)*50;
   if(now-lastStep<interval)return;
   const p=statePlayers.get(meId);if(!p)return;
   let dx=0,dy=0;
@@ -251,7 +280,19 @@ function actionStep(now) {
       else {dx=Math.sign(vx);dy=Math.sign(vy);}
     }
   }
-  if(dx||dy){lastStep=now;send({t:'mv',x:dx,y:dy});}
+  if((dx||dy) && pendingMoves.length<7){
+    lastStep=now;
+    const seq=++moveSeq;
+    if(send({t:'mv',x:dx,y:dy,seq})){
+      const opponents=[...statePlayers.values()].filter(q=>q.id!==meId);
+      if(predictor.possible(p.x,p.y,p.cells,dx,dy,stateShards,opponents)){
+        p.x+=dx;p.y+=dy;
+        // The local player reacts this frame, not on the next server snapshot.
+        p.drawX=p.x;p.drawY=p.y;
+      }
+      pendingMoves.push({seq,dx,dy});
+    }
+  }
 }
 function background() {
   const w=viewport.w,h=viewport.h;
@@ -422,8 +463,9 @@ function frame(now) {
     camera.y+=clamp(targetY-camera.y,-5,5)*.13;
   } else if(!active){camera.x=38+Math.sin(now*.00012)*3;camera.y=28+Math.cos(now*.00009)*3;}
   for(const q of statePlayers.values()) {
-    q.drawX+=(q.x-q.drawX)*.34;
-    q.drawY+=(q.y-q.drawY)*.34;
+    const factor=q.id===meId?.65:.28;
+    q.drawX+=(q.x-q.drawX)*factor;
+    q.drawY+=(q.y-q.drawY)*factor;
   }
   ctx.setTransform(viewport.dpr,0,0,viewport.dpr,0,0);
   background();

@@ -2,11 +2,12 @@
 const http=require('node:http');
 const fs=require('node:fs');
 const path=require('node:path');
+const {performance}=require('node:perf_hooks');
 const {World,CONFIG}=require('./world');
 const {upgrade}=require('./net');
 
 const PORT=Number(process.env.PORT)||10000;
-const MIN_POPULATION=process.env.MIN_POPULATION === undefined ? 16 : Math.max(0,Math.min(26,Number(process.env.MIN_POPULATION)||0));
+const MIN_POPULATION=process.env.MIN_POPULATION === undefined ? 8 : Math.max(0,Math.min(26,Number(process.env.MIN_POPULATION)||0));
 const MAX_HUMANS=Math.max(1,Math.min(80,Number(process.env.MAX_HUMANS)||40));
 const world=new World();
 const peers=new Set();
@@ -18,7 +19,7 @@ function sendFile(req,res) {
   let file;
   try{file=decodeURIComponent(new URL(req.url,'http://local').pathname);}catch{res.writeHead(400);res.end();return;}
   if(file==='/') file='/index.html';
-  if(!['/index.html','/styles.css','/client.js','/favicon.svg','/privacy.html','/ads.js','/robots.txt'].includes(file)) {
+  if(!['/index.html','/styles.css','/client.js','/prediction.js','/favicon.svg','/privacy.html','/ads.js','/robots.txt'].includes(file)) {
     res.writeHead(404,{'Content-Type':'text/plain'});res.end('404');return;
   }
   const name=path.resolve(PUBLIC,'.'+file);
@@ -41,7 +42,7 @@ const server=http.createServer((req,res)=>{
     const humans=[...world.players.values()].filter(p=>!p.bot).length;
     const bots=[...world.players.values()].filter(p=>p.bot).length;
     res.writeHead(200,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});
-    res.end(JSON.stringify({ok:true,name:'QUADRIFT',version:'0.2.0',humans,bots,shards:world.shards.size,uptime:Math.round(process.uptime())}));return;
+    res.end(JSON.stringify({ok:true,name:'QUADRIFT',version:'0.3.0',humans,bots,shards:world.shards.size,uptime:Math.round(process.uptime())}));return;
   }
   if(req.url==='/ads.txt') {
     const client=String(process.env.ADSENSE_CLIENT||'').trim();
@@ -62,8 +63,9 @@ server.on('upgrade',(req,socket,head)=>upgrade(req,socket,head,(peer)=>{
   const clients=[...peers].filter(c=>c.player);
   if(clients.length>=MAX_HUMANS){peer.send({t:'error',message:'La arena está llena. Intenta de nuevo.'});setTimeout(()=>peer.close(),100);return;}
   peer.player=null;peer.inputs=0;peer.window=Date.now();peer.lastMove=0;peer.lastRotation=0;peer.lastJoin=0;peer.lastSprint=0;
+  peer.moveQueue=[];peer.lastSequence=0;peer.moveAck=0;peer.visibleShards=new Set();peer.lastShardSync=0;
   peers.add(peer);
-  peer.send({t:'hello',name:'QUADRIFT',version:2,world:[CONFIG.width,CONFIG.height]});
+  peer.send({t:'hello',name:'QUADRIFT',version:3,world:[CONFIG.width,CONFIG.height]});
   peer.onMessage=raw=>{
     if(raw.length>320)return;
     const now=Date.now();
@@ -75,14 +77,21 @@ server.on('upgrade',(req,socket,head)=>upgrade(req,socket,head,(peer)=>{
     if(message.t==='join' && !peer.player) {
       if(typeof message.name!=='string')return;
       peer.player=world.addPlayer(message.name||'SIN NOMBRE',false);
+      peer.moveQueue=[];peer.lastSequence=0;peer.moveAck=0;peer.visibleShards.clear();peer.lastShardSync=0;
       peer.send({t:'welcome',id:peer.player.id});
       return;
     }
     const p=peer.player;
     if(!p)return;
-    if(message.t==='mv' && p.alive && now-peer.lastMove>=42) {
-      const dx=message.x,dy=message.y;
-      if(DIRS.has(`${dx},${dy}`)) {peer.lastMove=now;world.move(p,dx,dy);}
+    if(message.t==='ping' && Number.isFinite(message.ts) && message.ts>=0 && message.ts<1e12){
+      peer.send({t:'pong',ts:message.ts,simMs:Number(simWorkMs.toFixed(2)),loopMs:Number(loopDelayMs.toFixed(2))});
+    } else if(message.t==='mv' && p.alive) {
+      const dx=message.x,dy=message.y,seq=message.seq;
+      // Sequenced, bounded command queue: accepted steps execute on the server tick.
+      // The client predicts the same sequence locally and removes acknowledged steps.
+      if(DIRS.has(`${dx},${dy}`) && Number.isSafeInteger(seq) && seq>peer.lastSequence && seq<2**31 && peer.moveQueue.length<8){
+        peer.lastSequence=seq;peer.moveQueue.push({seq,dx,dy});
+      }
     } else if(message.t==='rot' && p.alive && now-peer.lastRotation>=190) {
       if(message.dir===1||message.dir===-1){peer.lastRotation=now;world.tryRotate(p,message.dir);}
     } else if(message.t==='joinPiece' && p.alive && now-peer.lastJoin>=180) {
@@ -96,14 +105,49 @@ server.on('upgrade',(req,socket,head)=>upgrade(req,socket,head,(peer)=>{
   };
   peer.onClose=()=>{peers.delete(peer);if(peer.player)world.removePlayer(peer.player.id);};
 }));
-// 20Hz authoritative world, 8Hz interest-filtered snapshots.
-const sim=setInterval(()=>world.tick(50),50);
+// 20Hz authoritative simulation, 14.3Hz snapshots, sequenced command acks.
+let simWorkMs=0,loopDelayMs=0,lastTickAt=performance.now();
+const sim=setInterval(()=>{
+  const started=performance.now();
+  loopDelayMs=loopDelayMs*.88+Math.max(0,started-lastTickAt-50)*.12;
+  lastTickAt=started;
+  world.tick(50);
+  for(const peer of peers){
+    const p=peer.player;
+    if(!p?.alive){peer.moveQueue.length=0;continue;}
+    // Drain at most one grid step per simulation tick when the authoritative
+    // movement cooldown permits it. The client may be several snapshots ahead.
+    if(peer.moveQueue.length && world.time>=p.nextMoveAt){
+      const command=peer.moveQueue.shift();
+      world.move(p,command.dx,command.dy);
+      peer.moveAck=command.seq;
+    }
+  }
+  simWorkMs=simWorkMs*.85+(performance.now()-started)*.15;
+},50);
 const population=setInterval(()=>world.populate(MIN_POPULATION),1700);
+// Differential shard snapshots avoid broadcasting the same mostly-static map
+// ~14 times per second. A full resync every 5s repairs any lost client state.
+function sendSnapshot(peer){
+  const state=world.snapshot(peer.player);
+  state.ack=peer.moveAck;
+  const visible=new Set(state.shards.map(s=>s[0]));
+  const full=!peer.lastShardSync || world.time-peer.lastShardSync>=5000;
+  if(full){peer.lastShardSync=world.time;peer.visibleShards=visible;}
+  else {
+    const add=state.shards.filter(s=>!peer.visibleShards.has(s[0]));
+    const remove=[...peer.visibleShards].filter(id=>!visible.has(id));
+    delete state.shards;
+    if(add.length||remove.length)state.shardsDelta={add,remove};
+    peer.visibleShards=visible;
+  }
+  peer.send(state);
+}
 const updates=setInterval(()=>{
   for(const event of world.events){for(const peer of peers) if(peer.player?.id===event.id) peer.send({t:'event',...event});}
   world.events=[];
-  for(const peer of peers) if(peer.player)peer.send(world.snapshot(peer.player));
-},125);
+  for(const peer of peers) if(peer.player)sendSnapshot(peer);
+},70);
 const heartbeat=setInterval(()=>{
   for(const peer of peers){
     if(Date.now()-peer.lastPong>75_000)peer.close();else peer.ping();

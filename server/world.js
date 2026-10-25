@@ -91,7 +91,7 @@ class World {
   constructor(opts={}) {
     this.random=opts.random||Math.random;
     this.players=new Map();this.shards=new Map();this.events=[];
-    this.time=0;this.nextId=1;this.spawnTimer=0;this._spatial=null;
+    this.time=0;this.nextId=1;this.spawnTimer=0;this._spatial=null;this.botCursor=0;
     this.spawnInitial(opts.initialShards??CONFIG.targetShards);
   }
   invalidate(){this._spatial=null;}
@@ -158,7 +158,7 @@ class World {
       nextMoveAt:0,sprintUntil:0,sprintReadyAt:0,noticeAt:0,
       brain:bot?{
         style:randomInt(4,this.random),reaction:140+randomInt(85,this.random),
-        next:0,target:null,plan:null,lastPos:[],stuck:0,rotateAt:0,
+        next:0,target:null,plan:null,route:null,pathAfter:0,lastPos:[],stuck:0,rotateAt:0,
         drift:dirs[randomInt(dirs.length,this.random)],driftUntil:0,
         patience:.77+this.random()*.2
       }:null};
@@ -222,7 +222,7 @@ class World {
     p.x=spot.x;p.y=spot.y;p.cells=[{x:0,y:0}];p.rank=1;p.alive=true;
     p.joined=0;p.captures=0;p.born=this.time;p.cooldown=0;
     p.sprintUntil=0;p.sprintReadyAt=this.time+1200;p.nextMoveAt=0;
-    if(p.bot&&p.brain){p.brain.target=null;p.brain.plan=null;p.brain.stuck=0;}
+    if(p.bot&&p.brain){p.brain.target=null;p.brain.plan=null;p.brain.route=null;p.brain.stuck=0;}
     this.invalidate();
   }
   kill(p,by=null){
@@ -320,34 +320,37 @@ class World {
     return [...this.players.values()].filter(q=>q.alive&&q.id!==p.id&&q.rank>p.rank&&complete(q)&&dist(p,q)<radius)
       .sort((a,b)=>dist(p,a)-dist(p,b))[0]||null;
   }
-  // Path search with shape-sized collisions, bounded to keep multiplayer simulation cheap.
-  pathStep(p,tx,ty,budget=440){
-    if(tx===p.x&&ty===p.y)return [0,0];
-    const root={x:p.x,y:p.y,first:null};
+  // Bounded breadth-first route with a reusable path. Only recomputed when a
+  // cached route is blocked or expires; no per-bot full BFS on each action.
+  pathRoute(p,tx,ty,budget=160){
+    if(tx===p.x&&ty===p.y)return [];
+    const root={x:p.x,y:p.y,parent:null,dir:null};
     const queue=[root],seen=new Set([key(p.x,p.y)]);
     let head=0,closest=root,closestScore=dist(root,{x:tx,y:ty});
     while(head<queue.length&&head<budget){
       const node=queue[head++];
       for(const [dx,dy] of dirs){
         const x=node.x+dx,y=node.y+dy,k=key(x,y);
-        if(seen.has(k))continue;
-        seen.add(k);
-        const abs=absolute({x,y,cells:p.cells});
-        if(!inBounds(abs)||this.blockedByShard(abs)||this.blockedByPlayer(abs,p.id))continue;
-        const next={x,y,first:node.first||[dx,dy]};
+        if(seen.has(k))continue;seen.add(k);
+        const at=absolute({x,y,cells:p.cells});
+        if(!inBounds(at)||this.blockedByShard(at)||this.blockedByPlayer(at,p.id))continue;
+        const next={x,y,parent:node,dir:[dx,dy]};
         const score=dist(next,{x:tx,y:ty});
         if(score<closestScore){closest=next;closestScore=score;}
-        if(x===tx&&y===ty)return next.first;
+        if(x===tx&&y===ty){closest=next;head=budget;break;}
         queue.push(next);
       }
     }
-    return closest.first;
+    const path=[];
+    while(closest?.parent){path.push(closest.dir);closest=closest.parent;}
+    return path.reverse();
   }
+  pathStep(p,tx,ty,budget=160){return this.pathRoute(p,tx,ty,budget)[0]||null;}
   // Find positions where collecting a shard is geometrically legal. Includes rotation options.
   shardPlan(p){
     const goal=p.rank+1,ordered=[...this.shards.values()].filter(s=>s.cells.length+p.cells.length<=goal*goal)
       .map(s=>({s,d:dist(p,s)})).filter(v=>v.d<24)
-      .sort((a,b)=>a.d-b.d).slice(0,19);
+      .sort((a,b)=>a.d-b.d).slice(0,12);
     let best=null;
     for(const {s,d} of ordered){
       const variations=p.cells.length>24?[0]:[0,1,3,2];
@@ -379,7 +382,7 @@ class World {
     b.next=this.time+(this.time<p.sprintUntil?75:b.reaction)+(this.random()-.5)*65;
     const hazard=this.dangerNear(p,11);
     if(hazard){
-      b.plan=null;
+      b.plan=null;b.route=null;
       if(complete(p)&&p.rank>=2&&dist(p,hazard)<6&&this.time>=p.sprintReadyAt&&this.random()<.4) {
         this.trySprint(p);
       }
@@ -391,11 +394,11 @@ class World {
       }).filter(Boolean).sort((a,b)=>b.score-a.score);
       if(steps.length){this.move(p,steps[0].dx,steps[0].dy);return;}
     }
-    if(this.tryJoin(p)){b.stuck=0;b.plan=null;return;}
+    if(this.tryJoin(p)){b.stuck=0;b.plan=null;b.route=null;return;}
     const enemies=[...this.players.values()].filter(q=>q.alive&&q.id!==p.id&&q.rank<p.rank);
     const prey=complete(p)?enemies.sort((a,b)=>dist(a,p)-dist(b,p))[0]:null;
     if(prey&&dist(prey,p)<(b.style===1?20:12)&&b.style!==3){
-      b.plan=null;
+      b.plan=null;b.route=null;
       const choices=dirs.map(([dx,dy])=>{
         const status=this.stepStatus(p,dx,dy);
         if(!['free','capture','join'].includes(status))return null;
@@ -405,7 +408,7 @@ class World {
       if(choices.length&&this.move(p,choices[0].dx,choices[0].dy))return;
     }
     if(!b.plan||this.time>b.plan.until||!this.shards.has(b.plan.id)||b.stuck>=4){
-      b.plan=this.shardPlan(p);
+      b.plan=this.shardPlan(p);b.route=null;
       if(b.plan)b.plan.until=this.time+1200+this.random()*900;
       b.stuck=0;
     }
@@ -413,19 +416,32 @@ class World {
       if(b.plan.turns){
         // Rotate deliberately, not at random, before attempting a path.
         if(this.time>b.rotateAt&&this.tryRotate(p,b.plan.turns)){
-          b.plan=null;b.rotateAt=this.time+900;return;
+          b.plan=null;b.route=null;b.rotateAt=this.time+900;return;
         }
       }
       const plan=b.plan;
-      const step=this.pathStep(p,plan.x,plan.y);
+      // Cheap straight-line step first, while preserving cached multi-step
+      // routing when an obstacle requires a detour.
+      if(!b.route?.length && this.time>=b.pathAfter){
+        b.route=this.pathRoute(p,plan.x,plan.y,180);
+        b.pathAfter=this.time+480+this.random()*180;
+      }
+      let step=b.route?.[0]||null;
+      if(!step){
+        const dx=Math.sign(plan.x-p.x),dy=Math.sign(plan.y-p.y);
+        if(dx||dy){
+          const choices=[[dx,dy],[dx,0],[0,dy]].filter(([a,b])=>a||b);
+          step=choices.find(([a,b])=>['free','join','capture'].includes(this.stepStatus(p,a,b)))||null;
+        }else step=[0,0];
+      }
       if(step&&step[0]===0&&step[1]===0){
-        if(this.tryJoin(p,plan.id)){b.plan=null;b.stuck=0;return;}
-        b.plan=null;
+        if(this.tryJoin(p,plan.id)){b.plan=null;b.route=null;b.stuck=0;return;}
+        b.plan=null;b.route=null;
       } else if(step){
         const success=this.move(p,...step);
-        if(success){b.stuck=0;return;}
-        b.stuck++;
-      }else{b.plan=null;b.stuck++;}
+        if(success){b.stuck=0;if(b.route?.length)b.route.shift();return;}
+        b.route=null;b.pathAfter=this.time+350;b.stuck++;
+      }else{b.plan=null;b.route=null;b.stuck++;}
     }
     // Exploratory behavior, memory of repeated positions and short hesitations.
     if(this.time>b.driftUntil||b.stuck>3){
@@ -446,7 +462,17 @@ class World {
       for(let i=0;i<Math.min(3,target-this.shards.size);i++)this.newShard();
     }
     for(const p of this.players.values())if(p.bot&&!p.alive&&this.time>=p.cooldown)this.respawn(p);
-    for(const p of this.players.values())if(p.bot)this.botAction(p);
+    // Round-robin cap spreads expensive bot decisions across simulation ticks.
+    // At 20Hz and a cap of three: 60 AI decisions/sec without bursty frames.
+    const bots=[...this.players.values()].filter(p=>p.bot);
+    if(bots.length){
+      let visited=0,acted=0;
+      while(visited<bots.length&&acted<3){
+        const p=bots[(this.botCursor+visited)%bots.length];visited++;
+        if(p.alive&&this.time>=p.brain.next){this.botAction(p);acted++;}
+      }
+      this.botCursor=(this.botCursor+visited)%bots.length;
+    }
   }
   populate(target=12){
     const humans=[...this.players.values()].filter(p=>!p.bot).length;

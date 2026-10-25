@@ -12,6 +12,6 @@ services:
       - key: NODE_VERSION
         value: 22
       - key: MIN_POPULATION
-        value: 16
+        value: 8
       - key: MAX_HUMANS
         value: 40

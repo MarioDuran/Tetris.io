@@ -1,4 +1,4 @@
-# QUADRIFT.IO — Edición 002
+# QUADRIFT.IO — Edición 003 · Movimiento responsivo
 
 Juego de arena multijugador en tiempo real. **Código fuente completo de un MVP jugable**, preparado para publicarse en Render como un único Web Service. Sin framework de interfaz, sin base de datos y sin dependencias npm de ejecución.
 
@@ -31,11 +31,11 @@ La interacción con piezas y jugadores la decide siempre el servidor, no el nave
 ## Arquitectura
 
 - **Node.js 22**, servidor HTTP integrado y transporte WebSocket RFC 6455 sin dependencias externas.
-- **20 ciclos/segundo** de simulación autoritativa; **8 actualizaciones/segundo** para cada cliente.
-- Instantáneas específicas de cada jugador (**interest management**) para no enviar todo el mapa.
-- **Canvas 2D** con interpolación en cliente y renderizado a la frecuencia del dispositivo.
-- Bots con planificación de posiciones de ensamblaje, rotación deliberada, búsqueda acotada de rutas sobre la cuadrícula, evasión de cuadrados mayores, persecución cuando están completos y diferentes tiempos de reacción/estrategias. Pueden usar sprint cuando huyen de peligros. **Los bots están claramente marcados como BOT**; el contador de personas reales es independiente.
-- Arena única de **76×56 celdas**, con hasta **40 conexiones humanas** por defecto y 16 entidades totales como objetivo de población (rellenadas con bots). **Aproximadamente 55 a 95 fragmentos simultáneos**, según la población; inicialmente alrededor de 72, en lugar de 240 como en la edición anterior. Índices espaciales en memoria para detectar ocupación y colisiones.
+- **20 ciclos/segundo** de simulación autoritativa; **14.3 actualizaciones/segundo** para cada cliente (cada 70 ms).
+- Instantáneas específicas de cada jugador (**interest management**) y **deltas de fragmentos**: se envían solo piezas nuevas/desaparecidas, con resincronización íntegra cada 5 segundos.
+- **Canvas 2D** con predicción conservadora de movimiento local e inputs secuenciados, confirmados por el servidor (**reconciliación**). No se predicen uniones, ataques ni rotaciones; los demás jugadores siguen interpolados.
+- Bots con planificación de posiciones de ensamblaje, rotación deliberada, rutas reutilizadas, búsqueda de caminos limitada y decisiones repartidas entre ciclos de simulación, evasión de cuadrados mayores, persecución cuando están completos y diferentes tiempos de reacción/estrategias. Pueden usar sprint cuando huyen de peligros. **Los bots están claramente marcados como BOT**; el contador de personas reales es independiente.
+- Arena única de **76×56 celdas**, con hasta **40 conexiones humanas** por defecto y 8 entidades totales como objetivo de población en Render Free (rellenadas con bots). **Aproximadamente 55 a 95 fragmentos simultáneos**, según la población; inicialmente alrededor de 72, en lugar de 240 como en la edición anterior. Índices espaciales en memoria para detectar ocupación y colisiones.
 - Datos de partida en memoria. No hay Redis ni PostgreSQL en esta versión.
 
 > **Escalado:** despliega **solo 1 instancia** de este servicio. Varias instancias sin coordinador de salas implicarían mundos separados y clasificaciones inconsistentes. Para escalar después se necesita un servicio de matchmaking y múltiples salas asignadas a procesos fijos; no basta con aumentar el contador de instancias de Render.
@@ -75,7 +75,7 @@ También puedes usar **New → Web Service** y configurar manualmente Node, buil
 | Variable | Valor por defecto | Descripción |
 |---|---|---|
 | `PORT` | `10000` | Puerto HTTP + WebSocket (Render lo define automáticamente). |
-| `MIN_POPULATION` | `16` | Población objetivo de personas + bots, máximo 26. Pon `0` para desactivar bots. |
+| `MIN_POPULATION` | `8` | Población objetivo de personas + bots, máximo 26. Pon `0` para desactivar bots. |
 | `MAX_HUMANS` | `40` | Máximo de conexiones humanas por servicio, hasta 80. |
 | `NODE_ENV` | `production` en Render | Modo de ejecución. |
 | `ADSENSE_CLIENT` | vacío | Cliente `ca-pub-...` (anuncios inactivos inicialmente). |
@@ -111,7 +111,8 @@ quadrift-io/
 ├── public/
 │   ├── index.html     Interfaz y pantallas
 │   ├── styles.css     Identidad visual y responsive
-│   ├── client.js      Canvas, HUD, teclado/mouse/táctil, interpolación
+│   ├── client.js      Canvas, HUD, teclado/mouse/táctil, predicción y sincronización
+│   ├── prediction.js  Colisiones locales conservadoras y reproducción de inputs
 │   ├── ads.js         Punto de integración publicitaria desactivado
 │   ├── favicon.svg
 │   ├── privacy.html   Aviso inicial que deberás completar
@@ -120,6 +121,26 @@ quadrift-io/
     ├── world.test.js  18 pruebas unitarias de reglas
     └── server.test.js Prueba de 2 clientes WebSocket reales
 ```
+
+## Edición 003 — rendimiento y baja latencia
+
+- El movimiento propio se muestra al recibir el input en el navegador, **sin esperar la próxima respuesta de Render**, siempre que el paso parezca libre; el servidor sigue decidiendo las colisiones y verifica todos los movimientos. Puede existir una corrección visual al chocar con piezas o rivales.
+- Cada comando de desplazamiento lleva `seq`; el servidor procesa los pasos en orden a un máximo de uno por tick, devuelve `ack` en la instantánea y el cliente reproduce solo inputs aún pendientes. La cola está limitada para evitar acumulaciones indefinidas.
+- Actualizaciones de 125 a **70 ms**; fragmentos del mapa enviados por diferencias. Cada 5 s se reenvía una copia completa para evitar inconsistencias.
+- IA optimizada: planificación de rutas con cache, límite de búsqueda y máximo de tres decisiones de bot por tick para evitar picos de procesamiento.
+- Indicadores en cabecera: **PING** = ida/vuelta WebSocket (RTT), **SRV** = duración promedio de simulación de un tick, **LOOP** = retraso aproximado del temporizador del servidor. El ping de red no mide directamente la latencia de entrada al juego, pero permite detectar conexiones deficientes.
+- Render Free: población objetivo por defecto reducida de 16 a **8** participantes (humanos + bots). Si ya tenías `MIN_POPULATION=16` definido manualmente en Render, cámbialo en **Environment** a `8` (o `4` para diagnosticar carga). La configuración de despliegue no garantiza que Render sobrescriba una variable personalizada existente.
+- **23 pruebas automáticas**: reglas, geometría, predicción local, reconciliación conceptual, confirmación de inputs WebSocket, fragmentos diferenciales y telemetría. Se verificó un servidor HTTP/WebSocket real con Node.js. En este entorno Chromium impidió abrir URLs locales, por lo que no se certifica todavía la experiencia visual completa conectada al servidor.
+
+### Publicar la actualización en Render
+
+1. Sustituye el contenido del repositorio GitHub por los archivos de esta edición, manteniendo `render.yaml` y `package.json` en la raíz.
+2. Realiza commit y espera al despliegue automático de Render (o selecciona **Manual Deploy → Deploy latest commit**).
+3. En Render → Environment, deja `MIN_POPULATION=8` (para diagnóstico puedes usar `4`) y confirma que exista **una única instancia** del servicio.
+4. Fuerza recarga del navegador para obtener el nuevo `client.js` y `prediction.js`.
+5. Una vez dentro del juego, revisa **PING / SRV / LOOP**, prueba caminar con WASD y compara con la versión 0.2. Comprueba que al unirte a piezas o chocar con rivales se respeta la posición del servidor.
+
+**Interpretación práctica:** PING alto sugiere un problema de red/distancia; SRV alto, CPU de simulación; LOOP alto, saturación del proceso o instancia. Estas métricas son indicativas, no sustituyen un perfilador ni instrumentación de percentiles.
 
 ## Edición 002 — cambios y validación
 

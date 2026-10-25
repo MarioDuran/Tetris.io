@@ -58,3 +58,31 @@ test('servidor HTTP + dos jugadores concurrentes usando WebSockets reales',async
   const next=await awaitMessage(a.ws,m=>m.t==='state');
   assert.equal(next.t,'state');
 }, {timeout:10000});
+
+test('secuencias, acks, shards diferenciales, ping y métricas en WebSockets',async(t)=>{
+  const port=await freePort();
+  const child=spawn(process.execPath,[path.resolve(__dirname,'../server/index.js')],{
+    cwd:path.resolve(__dirname,'..'),env:{...process.env,PORT:String(port),MIN_POPULATION:'0'},stdio:'ignore'
+  });
+  t.after(()=>child.kill('SIGTERM'));
+  const base=`http://127.0.0.1:${port}`;
+  for(let i=0;i<70;i++){
+    try{if((await fetch(base+'/health')).ok)break;}catch{}await delay(35);
+  }
+  const health=await (await fetch(base+'/health')).json();
+  assert.equal(health.version,'0.3.0');
+  assert.equal((await fetch(base+'/prediction.js')).status,200);
+  const a=await connectedClient(`ws://127.0.0.1:${port}/ws`,'Control');
+  t.after(()=>a.ws.close());
+  assert.ok(Array.isArray(a.state.shards));
+  const delta=await awaitMessage(a.ws,m=>m.t==='state'&&!('shards' in m));
+  assert.equal(delta.ack,0);
+  a.ws.send(JSON.stringify({t:'mv',seq:1,x:1,y:0}));
+  const confirmed=await awaitMessage(a.ws,m=>m.t==='state'&&m.ack>=1);
+  assert.equal(confirmed.ack,1);
+  a.ws.send(JSON.stringify({t:'ping',ts:100.5}));
+  const pong=await awaitMessage(a.ws,m=>m.t==='pong');
+  assert.equal(pong.ts,100.5);
+  assert.equal(typeof pong.simMs,'number');
+  assert.equal(typeof pong.loopMs,'number');
+});
