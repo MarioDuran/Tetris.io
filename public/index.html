@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f3efe5">
+  <meta name="description" content="QUADRIFT: gira, encaja y completa cuadrados para conquistar el tablero y absorber rivales.">
+  <title>QUADRIFT — La arena de los cuadrados</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app" id="app">
+    <header class="masthead">
+      <div class="brand" aria-label="QUADRIFT">
+        <span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <strong>QUAD<span>RIFT</span><sup>.IO</sup></strong>
+      </div>
+      <div class="mast-meta"><span class="edition">EDICIÓN 001 / ARENA ABIERTA</span><span class="line"></span>
+        <span class="online-ind"><span class="online-dot" id="onlineDot"></span><span id="connectionLabel">CONECTANDO</span></span>
+        <span class="numbers"><b id="humanCount">0</b> PERSONAS <span class="sep">/</span> <b id="botCount">0</b> BOTS</span>
+      </div>
+    </header>
+    <main class="gameframe" id="gameframe">
+      <canvas id="field" aria-label="Arena de QUADRIFT; usa las flechas o WASD para moverte"></canvas>
+      <div class="world-tag">MAPA / 076 × 056 <span>·</span> TEMPORADA 00</div>
+      <section class="hud" id="hud" hidden>
+        <div class="hud-label">TU ESTRUCTURA <span id="hudName">—</span></div>
+        <div class="hud-main"><span id="rankSize" class="big-rank">01<small>×01</small></span><div class="hud-right">
+          <b id="structureState">CUADRADO COMPLETO</b><span id="nextLevel">SIGUIENTE / 2×2</span>
+          <div class="bar"><div id="rankProgress"></div></div>
+          <span class="hud-cells"><b id="rankCells">1 / 4</b> CELDAS</span>
+        </div></div>
+        <div class="hud-bottom"><span>PIEZAS <b id="joinedCount">0</b></span><span>CAPTURAS <b id="captureCount">0</b></span></div>
+      </section>
+      <aside class="rankboard" id="rankboard" hidden>
+        <div class="rank-title"><span>CLASIFICACIÓN</span><small>EN DIRECTO</small></div>
+        <ol id="ranking"></ol>
+        <div class="rank-foot">UN CUADRADO VALE MÁS QUE MIL PIEZAS</div>
+      </aside>
+      <div class="toast-container" id="toastContainer" aria-live="polite"></div>
+      <div class="aimHint" id="aimHint" hidden>CLIC PARA MOVERTE · F PARA UNIR · R PARA GIRAR</div>
+      <div class="start-overlay" id="startOverlay">
+        <div class="opening-card">
+          <div class="opening-index"><span>JUEGO MULTIJUGADOR / 01</span><span class="issue">EXPERIMENTO DE TERRITORIO</span></div>
+          <div class="opening-copy">
+            <div class="cover-art" aria-hidden="true"><div class="art-grid"><div class="art-big"></div><div class="art-cut a"></div><div class="art-cut b"></div><div class="art-puck"></div></div><span>02 → 03 → 04</span></div>
+            <div class="opening-main">
+              <p class="eyebrow">OCUPA ESPACIO. CAMBIA LAS REGLAS.</p>
+              <h1>EL MUNDO<br>ES <em>CUADRADO.</em></h1>
+              <p class="explainer">Mueve tu pieza. Acopla fragmentos. Completa un cuadrado de <strong>2×2, 3×3, 4×4…</strong> y absorbe a rivales más pequeños.</p>
+              <form id="joinForm"><label for="nickname">TU ALIAS</label>
+                <div class="input-row"><input id="nickname" autocomplete="nickname" maxlength="16" placeholder="ESCRIBE TU NOMBRE" value="" required><button id="playBtn" type="submit">ENTRAR A LA ARENA <span>↗</span></button></div>
+              </form>
+            </div>
+          </div>
+          <div class="opening-bottom">
+            <span><kbd>W A S D</kbd> MOVER</span><span><kbd>Q / R</kbd> GIRAR</span><span><kbd>F / ESPACIO</kbd> UNIR</span><span>LA FORMA ES TU ARMA.</span>
+          </div>
+        </div>
+      </div>
+      <div class="end-overlay" id="endOverlay" hidden>
+        <div class="end-card"><span class="end-kicker">FIN DE LA PARTIDA / VUELVE A ENCAJAR</span>
+          <h2>TE HAN<br><em>ABSORBIDO.</em></h2><p id="killedBy">Un cuadrado mayor reclamó tu territorio.</p>
+          <div class="end-stats"><div><small>MEJOR CUADRADO</small><b id="endRank">1×1</b></div><div><small>PIEZAS UNIDAS</small><b id="endJoins">0</b></div><div><small>CAPTURAS</small><b id="endCaps">0</b></div></div>
+          <button id="respawnBtn" type="button">VOLVER A JUGAR <span>↗</span></button><span class="respawnWait" id="respawnWait"></span>
+          <div id="adBreak" class="ad-break" hidden><span>PUBLICIDAD</span><div id="adPlacement"></div></div>
+        </div>
+      </div>
+      <div class="mobile-controls" id="mobileControls" hidden>
+        <div class="dpad"><button class="pad up" data-dir="0,-1" aria-label="Arriba">↑</button><button class="pad left" data-dir="-1,0" aria-label="Izquierda">←</button><button class="pad down" data-dir="0,1" aria-label="Abajo">↓</button><button class="pad right" data-dir="1,0" aria-label="Derecha">→</button></div>
+        <div class="mobile-actions"><button id="rotateMobile">↻ <span>GIRAR</span></button><button id="joinMobile">+ <span>UNIR</span></button></div>
+      </div>
+    </main>
+    <footer class="footline"><span>QUADRIFT / UNA CELDA A LA VEZ</span><div><span>CUADRADO PERFECTO = PODER</span><a href="/privacy.html">PRIVACIDAD</a></div></footer>
+  </div>
+  <script src="/config.js"></script>
+  <script src="/client.js" defer></script>
+  <script src="/ads.js" defer></script>
+</body>
+</html>
