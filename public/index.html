@@ -16,7 +16,7 @@
         <span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
         <strong>QUAD<span>RIFT</span><sup>.IO</sup></strong>
       </div>
-      <div class="mast-meta"><span class="edition">EDICIÓN 001 / ARENA ABIERTA</span><span class="line"></span>
+      <div class="mast-meta"><span class="edition">EDICIÓN 002 / ARENA VIVA</span><span class="line"></span>
         <span class="online-ind"><span class="online-dot" id="onlineDot"></span><span id="connectionLabel">CONECTANDO</span></span>
         <span class="numbers"><b id="humanCount">0</b> PERSONAS <span class="sep">/</span> <b id="botCount">0</b> BOTS</span>
       </div>
@@ -32,14 +32,16 @@
           <span class="hud-cells"><b id="rankCells">1 / 4</b> CELDAS</span>
         </div></div>
         <div class="hud-bottom"><span>PIEZAS <b id="joinedCount">0</b></span><span>CAPTURAS <b id="captureCount">0</b></span></div>
+        <div class="hud-boost"><button id="sprintDesktop" type="button" class="sprint-button" disabled>⇧ SPRINT <small id="sprintStatus">CIERRA UN 2×2</small></button></div>
       </section>
+      <aside class="enemy-readout" id="enemyReadout" hidden><span>RADAR / RIVAL CERCANO</span><strong id="enemyHeadline">SIN CONTACTO</strong><small id="enemyDetail">—</small></aside>
       <aside class="rankboard" id="rankboard" hidden>
         <div class="rank-title"><span>CLASIFICACIÓN</span><small>EN DIRECTO</small></div>
         <ol id="ranking"></ol>
         <div class="rank-foot">UN CUADRADO VALE MÁS QUE MIL PIEZAS</div>
       </aside>
       <div class="toast-container" id="toastContainer" aria-live="polite"></div>
-      <div class="aimHint" id="aimHint" hidden>CLIC PARA MOVERTE · F PARA UNIR · R PARA GIRAR</div>
+      <div class="aimHint" id="aimHint" hidden>CLIC MOVER · F UNIR · R GIRAR · SHIFT SPRINT (−1 ANILLO)</div>
       <div class="start-overlay" id="startOverlay">
         <div class="opening-card">
           <div class="opening-index"><span>JUEGO MULTIJUGADOR / 01</span><span class="issue">EXPERIMENTO DE TERRITORIO</span></div>
@@ -48,14 +50,14 @@
             <div class="opening-main">
               <p class="eyebrow">OCUPA ESPACIO. CAMBIA LAS REGLAS.</p>
               <h1>EL MUNDO<br>ES <em>CUADRADO.</em></h1>
-              <p class="explainer">Mueve tu pieza. Acopla fragmentos. Completa un cuadrado de <strong>2×2, 3×3, 4×4…</strong> y absorbe a rivales más pequeños.</p>
+              <p class="explainer">Acopla piezas que aparecen y desaparecen. Cierra cuadrados <strong>2×2, 3×3, 4×4…</strong> para absorber rivales. Usa SPRINT para escapar sacrificando un anillo.</p>
               <form id="joinForm"><label for="nickname">TU ALIAS</label>
                 <div class="input-row"><input id="nickname" autocomplete="nickname" maxlength="16" placeholder="ESCRIBE TU NOMBRE" value="" required><button id="playBtn" type="submit">ENTRAR A LA ARENA <span>↗</span></button></div>
               </form>
             </div>
           </div>
           <div class="opening-bottom">
-            <span><kbd>W A S D</kbd> MOVER</span><span><kbd>Q / R</kbd> GIRAR</span><span><kbd>F / ESPACIO</kbd> UNIR</span><span>LA FORMA ES TU ARMA.</span>
+            <span><kbd>W A S D</kbd> MOVER</span><span><kbd>Q / R</kbd> GIRAR</span><span><kbd>F / ESPACIO</kbd> UNIR</span><span><kbd>SHIFT</kbd> SPRINT −1 ANILLO</span>
           </div>
         </div>
       </div>
@@ -69,7 +71,7 @@
       </div>
       <div class="mobile-controls" id="mobileControls" hidden>
         <div class="dpad"><button class="pad up" data-dir="0,-1" aria-label="Arriba">↑</button><button class="pad left" data-dir="-1,0" aria-label="Izquierda">←</button><button class="pad down" data-dir="0,1" aria-label="Abajo">↓</button><button class="pad right" data-dir="1,0" aria-label="Derecha">→</button></div>
-        <div class="mobile-actions"><button id="rotateMobile">↻ <span>GIRAR</span></button><button id="joinMobile">+ <span>UNIR</span></button></div>
+        <div class="mobile-actions"><button id="sprintMobile" class="sprint-mobile" disabled>⇧ <span>SPRINT</span></button><button id="rotateMobile">↻ <span>GIRAR</span></button><button id="joinMobile">+ <span>UNIR</span></button></div>
       </div>
     </main>
     <footer class="footline"><span>QUADRIFT / UNA CELDA A LA VEZ</span><div><span>CUADRADO PERFECTO = PODER</span><a href="/privacy.html">PRIVACIDAD</a></div></footer>

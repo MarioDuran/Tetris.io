@@ -27,7 +27,7 @@ function sendFile(req,res) {
     res.writeHead(200,{
       'Content-Type':mime[path.extname(name)]||'application/octet-stream',
       'Content-Length':stat.size,
-      'Cache-Control':file==='/index.html'?'no-store':'public, max-age=300',
+      'Cache-Control':['/index.html','/client.js','/styles.css','/ads.js'].includes(file)?'no-store':'public, max-age=300',
       'X-Content-Type-Options':'nosniff',
       'Referrer-Policy':'strict-origin-when-cross-origin',
       'Content-Security-Policy':"default-src 'self'; script-src 'self' https://pagead2.googlesyndication.com https://googleads.g.doubleclick.net; connect-src 'self' ws: wss: https://*.google.com https://*.googleads.g.doubleclick.net; img-src 'self' data: https:; frame-src https:; style-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
@@ -41,7 +41,7 @@ const server=http.createServer((req,res)=>{
     const humans=[...world.players.values()].filter(p=>!p.bot).length;
     const bots=[...world.players.values()].filter(p=>p.bot).length;
     res.writeHead(200,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});
-    res.end(JSON.stringify({ok:true,name:'QUADRIFT',humans,bots,shards:world.shards.size,uptime:Math.round(process.uptime())}));return;
+    res.end(JSON.stringify({ok:true,name:'QUADRIFT',version:'0.2.0',humans,bots,shards:world.shards.size,uptime:Math.round(process.uptime())}));return;
   }
   if(req.url==='/ads.txt') {
     const client=String(process.env.ADSENSE_CLIENT||'').trim();
@@ -61,9 +61,9 @@ const server=http.createServer((req,res)=>{
 server.on('upgrade',(req,socket,head)=>upgrade(req,socket,head,(peer)=>{
   const clients=[...peers].filter(c=>c.player);
   if(clients.length>=MAX_HUMANS){peer.send({t:'error',message:'La arena está llena. Intenta de nuevo.'});setTimeout(()=>peer.close(),100);return;}
-  peer.player=null;peer.inputs=0;peer.window=Date.now();peer.lastMove=0;peer.lastRotation=0;peer.lastJoin=0;
+  peer.player=null;peer.inputs=0;peer.window=Date.now();peer.lastMove=0;peer.lastRotation=0;peer.lastJoin=0;peer.lastSprint=0;
   peers.add(peer);
-  peer.send({t:'hello',name:'QUADRIFT',version:1,world:[CONFIG.width,CONFIG.height]});
+  peer.send({t:'hello',name:'QUADRIFT',version:2,world:[CONFIG.width,CONFIG.height]});
   peer.onMessage=raw=>{
     if(raw.length>320)return;
     const now=Date.now();
@@ -80,7 +80,7 @@ server.on('upgrade',(req,socket,head)=>upgrade(req,socket,head,(peer)=>{
     }
     const p=peer.player;
     if(!p)return;
-    if(message.t==='mv' && p.alive && now-peer.lastMove>=83) {
+    if(message.t==='mv' && p.alive && now-peer.lastMove>=42) {
       const dx=message.x,dy=message.y;
       if(DIRS.has(`${dx},${dy}`)) {peer.lastMove=now;world.move(p,dx,dy);}
     } else if(message.t==='rot' && p.alive && now-peer.lastRotation>=190) {
@@ -88,6 +88,8 @@ server.on('upgrade',(req,socket,head)=>upgrade(req,socket,head,(peer)=>{
     } else if(message.t==='joinPiece' && p.alive && now-peer.lastJoin>=180) {
       peer.lastJoin=now;
       if(!world.tryJoin(p)) world.note(p,'no-fit');
+    } else if(message.t==='sprint' && p.alive && now-peer.lastSprint>=400) {
+      peer.lastSprint=now;world.trySprint(p);
     } else if(message.t==='respawn' && !p.alive && world.time>=p.cooldown) {
       world.respawn(p);peer.send({t:'respawned'});
     }

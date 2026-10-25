@@ -11,6 +11,7 @@ let socket=null, connected=false, wantedName='', active=false, meId=null, lastSt
 let reconnectDelay=700, reconnectTimer=0, statePlayers=new Map(), stateShards=[];
 let viewport={w:1,h:1,dpr:1},tile=30,camera={x:38,y:28},focused=false;
 let keyDown=new Set(),mobileDir=null,walkTarget=null,lastStep=0,lastHUD=0,lastRankJSON='',effects=[],lastNetworkAt=0;
+let lastEnemies=[],selectedPreview=null,rivalCells=new Set(),audio=null,soundEnabled=true;
 const clamp=(v,lo,hi)=>Math.min(hi,Math.max(lo,v));
 const worldToScreen=(x,y)=>({x:Math.round((x-camera.x)*tile+viewport.w/2),y:Math.round((y-camera.y)*tile+viewport.h/2)});
 const toWorld=(sx,sy)=>({x:Math.floor((sx-viewport.w/2)/tile+camera.x),y:Math.floor((sy-viewport.h/2)/tile+camera.y)});
@@ -75,15 +76,18 @@ function flattenCells(flat){const a=[];for(let i=0;i<flat.length;i+=2)a.push({x:
 function applySnapshot(s) {
   const present=new Set();
   for(const raw of s.players){
-    const [id,x,y,rank,color,name,isBot,flat,captures,joined]=raw;
+    const [id,x,y,rank,color,name,isBot,flat,captures,joined,sprintLeft,readyLeft]=raw;
     present.add(id);
     let p=statePlayers.get(id);
     if(!p){p={id,x,y,drawX:x,drawY:y,rank,color,name,isBot:!!isBot,cells:[],captures:0,joined:0};statePlayers.set(id,p);}
     p.x=x;p.y=y;p.rank=rank;p.color=color;p.name=name;p.isBot=!!isBot;p.cells=flattenCells(flat);
     p.captures=captures;p.joined=joined||0;
+    p.sprintUntil=performance.now()+(sprintLeft||0);p.sprintReady=performance.now()+(readyLeft||0);
   }
   for(const id of statePlayers.keys()) if(!present.has(id))statePlayers.delete(id);
-  stateShards=s.shards.map(raw=>({id:raw[0],x:raw[1],y:raw[2],cells:flattenCells(raw[3])}));
+  rivalCells=new Set();for(const player of statePlayers.values())if(player.id!==meId)for(const c of player.cells)rivalCells.add((player.x+c.x)+':'+(player.y+c.y));
+  stateShards=s.shards.map(raw=>({id:raw[0],x:raw[1],y:raw[2],cells:flattenCells(raw[3]),expiresAt:performance.now()+(raw[4]||0)}));
+  lastEnemies=s.enemies||[];updateEnemyReadout();
   $('humanCount').textContent=s.humans;
   $('botCount').textContent=s.bots;
   updateRankboard(s.ranking);
@@ -119,7 +123,44 @@ function updateHUD() {
   $('rankCells').textContent=p.cells.length+' / '+(p.rank>=9?81:needed);
   $('joinedCount').textContent=p.joined;
   $('captureCount').textContent=p.captures;
+  updateSprintButton(p);
 }
+function updateSprintButton(p) {
+  const cd=Math.max(0,(p.sprintReady-performance.now())/1000);
+  const ready=p.rank>=2 && p.cells.length===p.rank*p.rank && cd<=0;
+  $('sprintDesktop').disabled=!ready;
+  $('sprintMobile').disabled=!ready;
+  $('sprintStatus').textContent=ready?'−'+(p.rank*2-1)+' CELDAS':cd>0?cd.toFixed(1)+'s / RECARGA':'CIERRA UN 2×2';
+  $('sprintDesktop').classList.toggle('sprinting',performance.now()<p.sprintUntil);
+}
+function updateEnemyReadout() {
+  const self=statePlayers.get(meId);
+  if(!self||!active)return;
+  const enemy=lastEnemies[0],view=$('enemyReadout');
+  view.hidden=!enemy;
+  if(!enemy)return;
+  const [id,x,y,rank,solid,name,bot]=enemy;
+  const d=Math.round(Math.hypot(x-self.x,y-self.y));
+  const dangerous=rank>self.rank&&solid===1;
+  view.classList.toggle('danger',dangerous&&d<15);
+  $('enemyHeadline').textContent=dangerous&&d<15?'¡CUADRADO MAYOR!':name.replace(' ·BOT','').slice(0,14).toUpperCase();
+  $('enemyDetail').textContent=(bot?'BOT · ':'JUGADOR · ')+rank+'×'+rank+' · '+d+' CELDAS';
+}
+function playTone(kind) {
+  if(!soundEnabled)return;
+  try{
+    const AC=window.AudioContext||window.webkitAudioContext;
+    if(!AC)return;
+    if(!audio)audio=new AC();
+    if(audio.state==='suspended')audio.resume().catch(()=>{});
+    const t=audio.currentTime,osc=audio.createOscillator(),gain=audio.createGain();
+    osc.type='square';osc.frequency.setValueAtTime(kind==='level'?330:kind==='sprint'?180:kind==='join'?270:190,t);
+    osc.frequency.exponentialRampToValueAtTime(kind==='level'?630:kind==='sprint'?115:kind==='join'?360:140,t+.13);
+    gain.gain.setValueAtTime(.045,t);gain.gain.exponentialRampToValueAtTime(.001,t+.17);
+    osc.connect(gain);gain.connect(audio.destination);osc.start(t);osc.stop(t+.18);
+  } catch { /* audio is entirely optional */ }
+}
+function sprint(){if(isAlive())send({t:'sprint'});}
 function toast(message,kind='') {
   const el=document.createElement('div');el.className='toast '+kind;el.textContent=message;
   $('toastContainer').append(el);setTimeout(()=>el.remove(),2300);
@@ -133,10 +174,13 @@ function burst() {
   }
 }
 function eventMessage(msg) {
-  if(msg.type==='level') {toast('CUADRADO '+msg.rank+'×'+msg.rank+' COMPLETADO','level');burst();}
+  if(msg.type==='level') {toast('CUADRADO '+msg.rank+'×'+msg.rank+' COMPLETADO','level');burst();playTone('level');}
   if(msg.type==='capture') {toast('TERRITORIO CAPTURADO · '+msg.name,'level');burst();}
-  if(msg.type==='join') {toast('+'+msg.cells+' CELDA'+(msg.cells===1?'':'S')+' UNIDAS');}
+  if(msg.type==='join') {toast('+'+msg.cells+' CELDA'+(msg.cells===1?'':'S')+' UNIDAS');playTone('join');}
   if(msg.type==='no-fit') toast('ACÉRCATE A UNA PIEZA QUE ENCAJE');
+  if(msg.type==='blocked') toast(msg.reason||'PIEZA INCOMPATIBLE');
+  if(msg.type==='no-sprint')toast(msg.reason||'SPRINT NO DISPONIBLE');
+  if(msg.type==='sprint'){toast('SPRINT · −'+msg.lost+' CELDAS · +VELOCIDAD','level');playTone('sprint');burst();}
   if(msg.type==='dead') {
     walkTarget=null;endOverlay.hidden=false;
     $('killedBy').textContent=msg.by?msg.by+' se quedó con tu territorio.':'Tu estructura ha sido absorbida.';
@@ -160,6 +204,7 @@ function handleKeyboard(e,down) {
     if(code==='KeyR'||code==='KeyE')send({t:'rot',dir:1});
     else if(code==='KeyQ')send({t:'rot',dir:-1});
     else if(code==='KeyF'||code==='Space'||code==='Enter')send({t:'joinPiece'});
+    else if(code==='ShiftLeft'||code==='ShiftRight')sprint();
   }
 }
 window.addEventListener('keydown',e=>{if(e.target instanceof HTMLInputElement)return;handleKeyboard(e,true);});
@@ -182,8 +227,13 @@ for(const btn of document.querySelectorAll('.pad')) {
 }
 $('rotateMobile').addEventListener('click',()=>send({t:'rot',dir:1}));
 $('joinMobile').addEventListener('click',()=>send({t:'joinPiece'}));
+$('sprintMobile').addEventListener('click',sprint);
+$('sprintDesktop').addEventListener('click',sprint);
 function actionStep(now) {
-  if(!isAlive() || now-lastStep<100)return;
+  if(!isAlive())return;
+  const self=statePlayers.get(meId);
+  const interval=self&&now<self.sprintUntil?47:70;
+  if(now-lastStep<interval)return;
   const p=statePlayers.get(meId);if(!p)return;
   let dx=0,dy=0;
   if(mobileDir){[dx,dy]=mobileDir;}
@@ -231,14 +281,85 @@ function rectTile(x,y,color,outline=C.ink,offset=0) {
   ctx.fillStyle=color;ctx.fillRect(p.x+offset,p.y+offset,s-offset*2,s-offset*2);
   ctx.strokeStyle=outline;ctx.lineWidth=1.25;ctx.strokeRect(p.x+offset+.6,p.y+offset+.6,s-offset*2-1.2,s-offset*2-1.2);
 }
-function drawShards() {
+function previewJoin(p,shard){
+  if(!p||p.rank>=9)return null;
+  const own=p.cells.map(c=>({x:p.x+c.x,y:p.y+c.y}));
+  const candidate=shard.cells.map(c=>({x:shard.x+c.x,y:shard.y+c.y}));
+  const occupied=new Set(own.map(c=>c.x+':'+c.y));
+  const overlapped=candidate.some(c=>occupied.has(c.x+':'+c.y));
+  const touching=candidate.some(c=>own.some(d=>Math.abs(c.x-d.x)+Math.abs(c.y-d.y)===1));
+  if(!touching||overlapped)return null;
+  const union=own.concat(candidate),minX=Math.min(...union.map(c=>c.x)),minY=Math.min(...union.map(c=>c.y));
+  const valid=union.length<=(p.rank+1)**2&&union.every(c=>c.x-minX<p.rank+1&&c.y-minY<p.rank+1&&!rivalCells.has(c.x+':'+c.y));
+  return {valid,union,minX,minY,newCells:candidate,shard};
+}
+function drawShards(p,now) {
+  selectedPreview=null;
+  const nearby=[];
   for(const shard of stateShards){
-    for(const c of shard.cells) {
+    const distance=p?Math.abs(shard.x-p.x)+Math.abs(shard.y-p.y):Infinity;
+    const near=distance<Math.max(7,(p?.rank||1)+4);
+    const test=near?previewJoin(p,shard):null;
+    if(test)nearby.push({test,distance});
+    const ttl=Math.max(0,shard.expiresAt-now);
+    const alpha=ttl<3600?Math.max(.2,ttl/3600):1;
+    ctx.globalAlpha=alpha;
+    for(const c of shard.cells){
       const x=shard.x+c.x,y=shard.y+c.y;
-      rectTile(x,y,'#fff8e5','#867a6d',3);
-      const p=worldToScreen(x,y);
-      ctx.fillStyle='#d1aa62';ctx.fillRect(p.x+tile*.42,p.y+tile*.42,tile*.16,tile*.16);
+      const fill=test?(test.valid?'#dbebd7':'#f0d4c7'):'#fff8e5';
+      const stroke=test?(test.valid?'#277a59':'#c55242'):'#867a6d';
+      rectTile(x,y,fill,stroke,3);
+      const screen=worldToScreen(x,y);
+      ctx.fillStyle=test?(test.valid?'#277a59':'#c55242'):'#d1aa62';
+      ctx.fillRect(screen.x+tile*.42,screen.y+tile*.42,tile*.16,tile*.16);
     }
+    ctx.globalAlpha=1;
+  }
+  nearby.sort((a,b)=>Number(b.test.valid)-Number(a.test.valid)||a.distance-b.distance);
+  selectedPreview=nearby[0]?.test||null;
+}
+function drawJoinPreview(p){
+  const test=selectedPreview;
+  if(!test)return;
+  const color=test.valid?'#277a59':'#c55242';
+  if(test.valid){
+    ctx.globalAlpha=.22;
+    for(const cell of test.newCells)rectTile(cell.x,cell.y,color,color,2);
+    ctx.globalAlpha=1;
+    const box=worldToScreen(test.minX,test.minY);
+    ctx.strokeStyle=color;ctx.lineWidth=2;ctx.setLineDash([6,4]);
+    ctx.strokeRect(box.x-3,box.y-3,(p.rank+1)*tile+6,(p.rank+1)*tile+6);
+    ctx.setLineDash([]);
+  }
+  const first=test.shard;
+  const at=worldToScreen(first.x+.5,first.y);
+  const text=test.valid?'✓ ENCAJA / F':'× NO CABE';
+  ctx.font='800 10px monospace';ctx.textAlign='center';
+  const width=ctx.measureText(text).width+14;
+  ctx.fillStyle=color;ctx.fillRect(at.x-width/2,at.y-22,width,17);
+  ctx.fillStyle='#fffdf6';ctx.fillText(text,at.x,at.y-10);ctx.textAlign='left';
+}
+function drawEnemyIndicators(p){
+  if(!p||!lastEnemies.length)return;
+  const list=lastEnemies.slice(0,3);
+  let drawn=0;
+  for(const [id,x,y,rank,solid,name,isBot] of list){
+    const marker=worldToScreen(x+rank*.5,y+rank*.5);
+    const m=48;
+    if(marker.x>m&&marker.x<viewport.w-m&&marker.y>m&&marker.y<viewport.h-m)continue;
+    const sx=viewport.w/2,sy=viewport.h/2,vx=marker.x-sx,vy=marker.y-sy;
+    if(Math.hypot(vx,vy)<1)continue;
+    const factor=Math.min((viewport.w/2-m)/(Math.abs(vx)||1),(viewport.h/2-m)/(Math.abs(vy)||1));
+    const xx=sx+factor*vx,yy=sy+factor*vy;
+    const threat=solid&&rank>p.rank,color=threat?'#c55242':'#19222a';
+    const angle=Math.atan2(vy,vx);
+    ctx.save();ctx.translate(xx,yy);ctx.rotate(angle);
+    ctx.fillStyle=color;ctx.beginPath();ctx.moveTo(14,0);ctx.lineTo(-7,-8);ctx.lineTo(-7,8);ctx.closePath();ctx.fill();ctx.restore();
+    const label=rank+'×'+rank+(isBot?' BOT':'');
+    ctx.font='800 10px monospace';ctx.textAlign='center';
+    const width=ctx.measureText(label).width+14;
+    ctx.fillStyle=color;ctx.fillRect(xx-width/2,yy+13+drawn*2,width,17);
+    ctx.fillStyle='#fffdf6';ctx.fillText(label,xx,yy+25+drawn*2);ctx.textAlign='left';drawn++;
   }
 }
 function drawAim(p) {
@@ -293,6 +414,7 @@ function frame(now) {
   requestAnimationFrame(frame);
   if(!viewport.w||!viewport.h)return;
   actionStep(now);
+  if(now-lastHUD>220){lastHUD=now;const self=statePlayers.get(meId);if(self&&active)updateSprintButton(self);}
   const p=statePlayers.get(meId);
   if(p){
     const targetX=p.x+Math.max(1,p.rank)/2,targetY=p.y+Math.max(1,p.rank)/2;
@@ -306,9 +428,10 @@ function frame(now) {
   ctx.setTransform(viewport.dpr,0,0,viewport.dpr,0,0);
   background();
   if(lastState){
-    drawShards();
+    drawShards(p,now);
+    if(p)drawJoinPreview(p);
     for(const q of statePlayers.values())if(q.id!==meId)drawPlayer(q);
-    if(p)drawPlayer(p,true);
+    if(p){drawPlayer(p,true);drawEnemyIndicators(p);}
   } else demo();
   for(const spark of effects){
     spark.age+=.025;spark.x+=spark.vx*.02;spark.y+=spark.vy*.02;
